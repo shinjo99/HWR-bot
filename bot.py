@@ -1,15 +1,17 @@
 import os
-import json
 import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ── 설정 ──────────────────────────────────────────
-BOT_TOKEN     = os.environ.get("BOT_TOKEN", "")
-CLAUDE_KEY    = os.environ.get("CLAUDE_API_KEY", "")
-ALLOWED_IDS   = set(int(x) for x in os.environ.get("ALLOWED_IDS", "").split(",") if x.strip())
+BOT_TOKEN  = os.environ.get("BOT_TOKEN", "")
+CLAUDE_KEY = os.environ.get("CLAUDE_API_KEY", "")
+BOT_PW     = os.environ.get("BOT_PASSWORD", "hanwha1234")
 
-# ── HWR 데이터 (Dashboard와 동기화) ──────────────
+# 인증된 사용자 (메모리 저장 — 재시작 시 초기화)
+AUTHED = set()
+
+# ── HWR 데이터 ────────────────────────────────────
 HWR_CONTEXT = """
 당신은 HWR(Hanwha Q CELLS USA / HEUH) 미국 개발 사업 대시보드의 AI 어시스트입니다.
 다음 데이터를 기반으로 질문에 답하세요.
@@ -52,16 +54,18 @@ Cedar Ridge, Barkley Creek, Greasewood, Intermountain, Prairie Ridge
 6. ISO별 Local GR 방안 (진행중)
 """
 
-# ── 보안: 허용된 사용자만 ──────────────────────
-def is_allowed(user_id: int) -> bool:
-    if not ALLOWED_IDS:  # 설정 안 되어있으면 일단 허용 (초기 테스트용)
-        return True
-    return user_id in ALLOWED_IDS
+# ── 인증 확인 ─────────────────────────────────────
+def is_authed(uid: int) -> bool:
+    return uid in AUTHED
 
-# ── Claude API 호출 ────────────────────────────
+# ── Claude API ────────────────────────────────────
 def ask_claude(question: str) -> str:
     if not CLAUDE_KEY:
-        return "⚠️ Claude API 키가 설정되지 않았습니다."
+        return (
+            "⚠️ AI 분석 기능은 준비 중입니다.\n\n"
+            "아래 명령어를 사용해주세요:\n"
+            "/status /atlas /ppa /liquidity /strategy"
+        )
     try:
         res = requests.post(
             "https://api.anthropic.com/v1/messages",
@@ -71,7 +75,7 @@ def ask_claude(question: str) -> str:
                 "content-type": "application/json",
             },
             json={
-                "model": "claude-sonnet-4-6",
+                "model": "claude-sonnet-4-5",
                 "max_tokens": 1000,
                 "system": HWR_CONTEXT,
                 "messages": [{"role": "user", "content": question}],
@@ -79,32 +83,41 @@ def ask_claude(question: str) -> str:
             timeout=30,
         )
         data = res.json()
+        if "content" not in data:
+            return f"⚠️ API 오류: {data.get('error', {}).get('message', '알 수 없는 오류')}"
         return data["content"][0]["text"]
     except Exception as e:
         return f"⚠️ 오류: {str(e)}"
 
-# ── 명령어 핸들러 ──────────────────────────────
+# ── 핸들러 ────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if not is_allowed(uid):
-        await update.message.reply_text("⛔ 접근 권한이 없습니다.")
-        return
+    if is_authed(uid):
+        await show_menu(update)
+    else:
+        await update.message.reply_text(
+            "🔐 *HWR Dashboard Bot*\n\n"
+            "비밀번호를 입력하세요.",
+            parse_mode="Markdown"
+        )
+
+async def show_menu(update: Update):
     await update.message.reply_text(
-        "👋 HWR Dashboard Bot입니다.\n\n"
+        "👋 *HWR Dashboard Bot*에 오신 것을 환영합니다!\n\n"
         "📋 *사용 가능한 명령어:*\n"
-        "/status - 매각현황 요약\n"
-        "/atlas - Atlas Milestone 현황\n"
-        "/ppa - PPA 진척 현황\n"
-        "/liquidity - 운영자산 유동화\n"
-        "/strategy - 전략 액션 아이템\n\n"
+        "/status — 매각현황 요약\n"
+        "/atlas — Atlas Milestone 현황\n"
+        "/ppa — PPA 진척 현황\n"
+        "/liquidity — 운영자산 유동화\n"
+        "/strategy — 전략 액션 아이템\n\n"
         "💬 또는 자유롭게 질문하세요!\n"
         "예: _Bonanza Peak 현황은?_",
         parse_mode="Markdown"
     )
 
 async def status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
-        await update.message.reply_text("⛔ 접근 권한이 없습니다.")
+    if not is_authed(update.effective_user.id):
+        await update.message.reply_text("🔐 먼저 비밀번호를 입력해주세요. /start")
         return
     msg = (
         "💰 *'26년 매각현황 요약*\n"
@@ -123,7 +136,8 @@ async def status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def atlas_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
+    if not is_authed(update.effective_user.id):
+        await update.message.reply_text("🔐 먼저 비밀번호를 입력해주세요. /start")
         return
     msg = (
         "🏔 *Atlas North 1st Milestone*\n"
@@ -137,7 +151,8 @@ async def atlas_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def liquidity_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
+    if not is_authed(update.effective_user.id):
+        await update.message.reply_text("🔐 먼저 비밀번호를 입력해주세요. /start")
         return
     msg = (
         "💧 *운영자산 유동화*\n"
@@ -154,7 +169,8 @@ async def liquidity_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def strategy_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
+    if not is_authed(update.effective_user.id):
+        await update.message.reply_text("🔐 먼저 비밀번호를 입력해주세요. /start")
         return
     msg = (
         "🎯 *전략 액션 아이템*\n"
@@ -170,7 +186,8 @@ async def strategy_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def ppa_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
+    if not is_authed(update.effective_user.id):
+        await update.message.reply_text("🔐 먼저 비밀번호를 입력해주세요. /start")
         return
     msg = (
         "⚡ *PPA 진척 현황*\n"
@@ -184,23 +201,35 @@ async def ppa_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_allowed(update.effective_user.id):
-        await update.message.reply_text("⛔ 접근 권한이 없습니다.")
+    uid  = update.effective_user.id
+    text = update.message.text.strip()
+
+    # 비밀번호 입력 처리
+    if not is_authed(uid):
+        if text == BOT_PW:
+            AUTHED.add(uid)
+            await update.message.reply_text("✅ 인증되었습니다!")
+            await show_menu(update)
+        else:
+            await update.message.reply_text(
+                "❌ 비밀번호가 틀렸습니다.\n다시 입력하거나 /start 를 눌러주세요."
+            )
         return
-    question = update.message.text
+
+    # 인증된 사용자 — Claude 질문
     await update.message.reply_text("🤔 분석 중...")
-    answer = ask_claude(question)
+    answer = ask_claude(text)
     await update.message.reply_text(answer)
 
-# ── 실행 ──────────────────────────────────────
+# ── 실행 ──────────────────────────────────────────
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start",      start))
-    app.add_handler(CommandHandler("status",     status))
-    app.add_handler(CommandHandler("atlas",      atlas_cmd))
-    app.add_handler(CommandHandler("liquidity",  liquidity_cmd))
-    app.add_handler(CommandHandler("strategy",   strategy_cmd))
-    app.add_handler(CommandHandler("ppa",        ppa_cmd))
+    app.add_handler(CommandHandler("start",     start))
+    app.add_handler(CommandHandler("status",    status))
+    app.add_handler(CommandHandler("atlas",     atlas_cmd))
+    app.add_handler(CommandHandler("liquidity", liquidity_cmd))
+    app.add_handler(CommandHandler("strategy",  strategy_cmd))
+    app.add_handler(CommandHandler("ppa",       ppa_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("🤖 HWR Bot 시작!")
     app.run_polling()
