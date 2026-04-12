@@ -44,8 +44,11 @@ def get_ppv_context():
     return "\n".join(lines)
 
 HWR_BASE = """
-당신은 HWR(Hanwha Q CELLS USA / HEUH) 미국 개발 사업 대시보드의 AI 어시스트입니다.
-간결하게 핵심만 답하세요.
+답변 형식 규칙:
+- 마크다운 사용 금지 (**, ##, *, - 등 모두 금지)
+- 숫자는 1. 2. 3. 형식 사용
+- 줄바꿈으로 구분, 짧고 명확하게
+- 이모지는 최소한으로
 
 ['26년 매각 대상 - 총 $142M]
 - Boulder Solar 3: H확도 $40M NBO (Morrison)
