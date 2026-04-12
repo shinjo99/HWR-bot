@@ -3,225 +3,186 @@ import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ── 설정 ──────────────────────────────────────────
 BOT_TOKEN  = os.environ.get("BOT_TOKEN", "")
 CLAUDE_KEY = os.environ.get("CLAUDE_API_KEY", "")
 BOT_PW     = os.environ.get("BOT_PASSWORD", "hanwha1234")
+FB_URL     = "https://team-dashboard-c0d7b-default-rtdb.asia-southeast1.firebasedatabase.app"
 
-# 인증된 사용자 (메모리 저장 — 재시작 시 초기화)
 AUTHED = set()
 
-# ── HWR 데이터 ────────────────────────────────────
-HWR_CONTEXT = """
-당신은 HWR(Hanwha Q CELLS USA / HEUH) 미국 개발 사업 대시보드의 AI 어시스트입니다.
-다음 데이터를 기반으로 질문에 답하세요.
+def fb_read(path):
+    try:
+        res = requests.get(f"{FB_URL}/{path}.json", timeout=5)
+        return res.json() or {}
+    except:
+        return {}
 
-[포트폴리오]
-- 총 94개 프로젝트 (HWR + Q-cells)
-- PV: 13,761 MWac / ESS: 10,871 MW
+def get_ppv_context():
+    data = fb_read("ppv")
+    if not data:
+        return "[PPV 데이터 없음 — 대시보드 PPV 페이지에서 스냅샷을 찍어주세요]"
+    lines = ["[PPV 최신 데이터 — Firebase]"]
+    summary = data.get("summary", {})
+    if summary:
+        lines.append(f"- 총 Risked PPV: ${summary.get('totalRisked','?')}M")
+        by_stage = summary.get("byStage", {})
+        lines.append(f"- Late: ${by_stage.get('Late',0)}M / Mid: ${by_stage.get('Mid',0)}M / Early: ${by_stage.get('Early',0)}M")
+        lines.append(f"- 업데이트: {summary.get('updatedAt','?')}")
+    snapshots = data.get("snapshots", {})
+    if snapshots:
+        snaps = sorted(snapshots.values(), key=lambda x: x.get("ts",0), reverse=True)[:3]
+        lines.append("\n[스냅샷 이력]")
+        for s in snaps:
+            lines.append(f"- {s.get('label','?')}: ${s.get('total','?')}M")
+    events = data.get("events", {})
+    if events:
+        evts = sorted(events.values(), key=lambda x: x.get("ts",""), reverse=True)[:5]
+        lines.append("\n[최근 변경]")
+        for e in evts:
+            proj = f" [{e.get('project')}]" if e.get("project") else ""
+            lines.append(f"- {e.get('ts','?')[:16]} {e.get('type','?')}{proj}: {e.get('desc','?')}")
+    return "\n".join(lines)
+
+HWR_BASE = """
+당신은 HWR(Hanwha Q CELLS USA / HEUH) 미국 개발 사업 대시보드의 AI 어시스트입니다.
+간결하게 핵심만 답하세요.
 
 ['26년 매각 대상 - 총 $142M]
-- Boulder Solar 3: H확도, $40M, NBO 단계 (Morrison 협의 중)
-- Bonanza Peak: M확도, $50M, NDA/티저 (Lydian 초기 협의)
-- Oberon II: M확도, $5M, NDA/티저 (Disney COD 연장 논의)
-- Oberon III: M확도, $10M, NDA/티저 (Mars 조달 중단)
-- Oberon IV: M확도, $5M, NDA/티저 (TTE NBO 제출)
-- Taormina: M확도, $10M, NDA/티저 (Austin Energy RFP 완료)
-- Lavender: M확도, $10M, NDA/티저 (바이어 리스트 작성)
-- Gibson: L확도, $12M, 준비 (Dominion Shortlist 4월)
+- Boulder Solar 3: H확도 $40M NBO (Morrison)
+- Bonanza Peak: M확도 $50M NDA/티저 (Lydian)
+- Oberon II: M확도 $5M (Disney COD 연장)
+- Oberon III: M확도 $10M (Mars 조달 중단)
+- Oberon IV: M확도 $5M (TTE NBO 제출)
+- Taormina: M확도 $10M (Austin Energy RFP 완료)
+- Lavender: M확도 $10M (바이어 리스트 작성)
+- Gibson: L확도 $12M (Dominion Shortlist 4월)
 
-[Safe Harbor - Class A]
-Borden, Keystone, Harlem River, Twinkle, Black Star, Florence
+[Safe Harbor Class A] Borden, Keystone, Harlem River, Twinkle, Black Star, Florence
+[Safe Harbor Class B] Grandview, Stone Fruit, Midfield, Neptune, Appaloosa 2, Martha Fields, Cedar Ridge, Barkley Creek, Greasewood, Intermountain, Prairie Ridge
 
-[Safe Harbor - Class B]
-Grandview, Stone Fruit, Midfield, Neptune, Appaloosa 2, Martha Fields,
-Cedar Ridge, Barkley Creek, Greasewood, Intermountain, Prairie Ridge
-
-[Atlas 1st Milestone - 달성률 25%]
-2.12(a)~(q) 12개 항목 중 일부 Partially/완료
+[Atlas 1st Milestone 달성률 25%]
+완료: 2.12(f) / Partially: 2.12(a) 2.12(c) / D-Day 임박: D+10 초과
 
 [운영자산 유동화]
-- 단기매각: TotalJV(Ob1A/Rayos/Ellis/Skysol) + HEUH(Laguna/Astoria)
-  예상 현금유입 $150~182M, 차입금 제거 $275M, PL 영향 -$58~-90M
-- 중장기보유: Ho'Ohana(ITC recapture 29년까지), Oberon 1B, Imeson
+단기매각: TotalJV(Ob1A/Rayos/Ellis/Skysol) + HEUH(Laguna/Astoria)
+현금유입 $150~182M, 차입금 제거 $275M, PL -$58~-90M
+중장기보유: Ho'Ohana(29년), Oberon 1B, Imeson
 
-[전략 액션 아이템]
-1. 선제적 매각 프로세스 구체화 (진행중)
-2. EPC Framework 확정 (완료)
-3. Value-up 방안 구체화 (진행중)
-4. Legacy 자산 전략 과제 (진행중)
-5. BESS 중심 성장 전략 수립 (진행중)
-6. ISO별 Local GR 방안 (진행중)
+[포트폴리오] 94개 프로젝트, PV 13,761 MWac, ESS 10,871 MW
 """
 
-# ── 인증 확인 ─────────────────────────────────────
-def is_authed(uid: int) -> bool:
-    return uid in AUTHED
-
-# ── Claude API ────────────────────────────────────
-def ask_claude(question: str) -> str:
+def ask_claude(question):
     if not CLAUDE_KEY:
-        return (
-            "⚠️ AI 분석 기능은 준비 중입니다.\n\n"
-            "아래 명령어를 사용해주세요:\n"
-            "/status /atlas /ppa /liquidity /strategy"
-        )
+        return "⚠️ AI 기능 준비 중\n명령어: /status /atlas /ppa /liquidity /strategy /ppv"
+    ppv_ctx = get_ppv_context()
+    system = HWR_BASE + "\n\n" + ppv_ctx
     try:
         res = requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": CLAUDE_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-sonnet-4-5",
-                "max_tokens": 1000,
-                "system": HWR_CONTEXT,
-                "messages": [{"role": "user", "content": question}],
-            },
+            headers={"x-api-key": CLAUDE_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5", "max_tokens": 800, "system": system,
+                  "messages": [{"role": "user", "content": question}]},
             timeout=30,
         )
         data = res.json()
         if "content" not in data:
-            return f"⚠️ API 오류: {data.get('error', {}).get('message', '알 수 없는 오류')}"
+            return f"⚠️ {data.get('error',{}).get('message','API 오류')}"
         return data["content"][0]["text"]
     except Exception as e:
         return f"⚠️ 오류: {str(e)}"
 
-# ── 핸들러 ────────────────────────────────────────
-async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if is_authed(uid):
-        await show_menu(update)
-    else:
-        await update.message.reply_text(
-            "🔐 *HWR Dashboard Bot*\n\n"
-            "비밀번호를 입력하세요.",
-            parse_mode="Markdown"
-        )
+def is_authed(uid): return uid in AUTHED
 
-async def show_menu(update: Update):
+async def show_menu(update):
     await update.message.reply_text(
-        "👋 *HWR Dashboard Bot*에 오신 것을 환영합니다!\n\n"
-        "📋 *사용 가능한 명령어:*\n"
-        "/status — 매각현황 요약\n"
-        "/atlas — Atlas Milestone 현황\n"
-        "/ppa — PPA 진척 현황\n"
-        "/liquidity — 운영자산 유동화\n"
-        "/strategy — 전략 액션 아이템\n\n"
-        "💬 또는 자유롭게 질문하세요!\n"
-        "예: _Bonanza Peak 현황은?_",
+        "👋 *HWR Dashboard Bot*\n\n"
+        "/status — 매각현황\n/atlas — Atlas Milestone\n"
+        "/ppa — PPA 진척\n/liquidity — 운영자산 유동화\n"
+        "/strategy — 전략 액션\n/ppv — PPV 현황 (Firebase)\n\n"
+        "💬 자유 질문도 가능합니다!",
         parse_mode="Markdown"
     )
 
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if is_authed(update.effective_user.id): await show_menu(update)
+    else: await update.message.reply_text("🔐 *HWR Dashboard Bot*\n\n비밀번호를 입력하세요.", parse_mode="Markdown")
+
+async def ppv_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_authed(update.effective_user.id):
+        await update.message.reply_text("🔐 /start"); return
+    await update.message.reply_text("📊 Firebase 조회 중...")
+    data = fb_read("ppv")
+    summary = data.get("summary", {})
+    if not summary:
+        await update.message.reply_text("⚠️ PPV 데이터 없음\n대시보드 PPV 페이지에서 📸 스냅샷을 찍어주세요."); return
+    by_stage = summary.get("byStage", {})
+    msg = (f"📊 *PPV 현황*\n━━━━━━━━━━━━━━\n"
+           f"총 Risked PPV: *${summary.get('totalRisked','?')}M*\n\n"
+           f"🟢 Late: ${by_stage.get('Late',0):.1f}M\n"
+           f"🔵 Mid: ${by_stage.get('Mid',0):.1f}M\n"
+           f"🟡 Early: ${by_stage.get('Early',0):.1f}M\n\n"
+           f"🕐 {summary.get('updatedAt','?')[:16]}")
+    events = data.get("events", {})
+    if events:
+        evts = sorted(events.values(), key=lambda x: x.get("ts",""), reverse=True)[:3]
+        msg += "\n\n*최근 변경:*\n"
+        for e in evts:
+            proj = f"[{e.get('project')}] " if e.get("project") else ""
+            msg += f"• {proj}{e.get('type','?')}: {e.get('desc','?')}\n"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
 async def status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_authed(update.effective_user.id):
-        await update.message.reply_text("🔐 먼저 비밀번호를 입력해주세요. /start")
-        return
-    msg = (
-        "💰 *'26년 매각현황 요약*\n"
-        "━━━━━━━━━━━━━━\n"
-        "총 예상 매각이익: *$142M*\n\n"
-        "🟢 H확도: Boulder Solar 3 ($40M) — NBO\n"
-        "🟡 M확도:\n"
-        "  • Bonanza Peak $50M — NDA/티저\n"
-        "  • Oberon II $5M — NDA/티저\n"
-        "  • Oberon III $10M — NDA/티저\n"
-        "  • Oberon IV $5M — NDA/티저\n"
-        "  • Taormina $10M — NDA/티저\n"
-        "  • Lavender $10M — NDA/티저\n"
-        "🔴 L확도: Gibson $12M — 준비"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text("🔐 /start"); return
+    await update.message.reply_text(
+        "💰 *'26년 매각현황*\n━━━━━━━━━━━━━━\n총 *$142M*\n\n"
+        "🟢 H: Boulder Solar 3 $40M — NBO\n"
+        "🟡 M: Bonanza Peak $50M / Oberon II~IV $20M / Taormina $10M / Lavender $10M\n"
+        "🔴 L: Gibson $12M", parse_mode="Markdown")
 
 async def atlas_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_authed(update.effective_user.id):
-        await update.message.reply_text("🔐 먼저 비밀번호를 입력해주세요. /start")
-        return
-    msg = (
-        "🏔 *Atlas North 1st Milestone*\n"
-        "━━━━━━━━━━━━━━\n"
-        "전체 달성률: *25%* (12개 항목)\n\n"
-        "✅ 완료: 2.12(f) CAP License\n"
-        "🟡 Partially: 2.12(a) Tax/Insurance, 2.12(c) PPA Amendment\n"
-        "⏳ 미착수: 나머지 항목\n\n"
-        "🚨 D-Day 임박: 2.12(a),(f) — D+10 초과"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text("🔐 /start"); return
+    await update.message.reply_text(
+        "🏔 *Atlas Milestone*\n━━━━━━━━━━━━━━\n달성률: *25%*\n\n"
+        "✅ 2.12(f) CAP License\n🟡 2.12(a) 2.12(c) Partially\n🚨 D+10 초과", parse_mode="Markdown")
 
 async def liquidity_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_authed(update.effective_user.id):
-        await update.message.reply_text("🔐 먼저 비밀번호를 입력해주세요. /start")
-        return
-    msg = (
-        "💧 *운영자산 유동화*\n"
-        "━━━━━━━━━━━━━━\n"
-        "*단기 매각 (6개):*\n"
-        "TotalJV: Ob1A, Rayos, Ellis, Skysol\n"
-        "HEUH: Laguna (협의중), Astoria (준비중)\n\n"
-        "예상 현금유입: *$150~182M*\n"
-        "차입금 제거: *$275M*\n"
-        "PL 영향: *-$58~-90M*\n\n"
-        "*중장기 보유 (3개):*\n"
-        "Ho'Ohana (29년까지), Oberon 1B, Imeson"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text("🔐 /start"); return
+    await update.message.reply_text(
+        "💧 *운영자산 유동화*\n━━━━━━━━━━━━━━\n"
+        "단기매각 6개: Ob1A Rayos Ellis Skysol Laguna Astoria\n\n"
+        "현금유입 *$150~182M* / 차입금 제거 *$275M* / PL *-$58~-90M*\n\n"
+        "중장기보유: Ho'Ohana Ob1B Imeson", parse_mode="Markdown")
 
 async def strategy_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_authed(update.effective_user.id):
-        await update.message.reply_text("🔐 먼저 비밀번호를 입력해주세요. /start")
-        return
-    msg = (
-        "🎯 *전략 액션 아이템*\n"
-        "━━━━━━━━━━━━━━\n"
-        "✅ EPC Framework 확정 (완료)\n"
-        "🔵 선제적 매각 프로세스 구체화 (진행중)\n"
-        "🔵 Value-up 방안 구체화 (진행중)\n"
-        "🔵 Legacy 자산 전략 과제 (진행중)\n"
-        "🔵 BESS 중심 성장 전략 수립 (진행중)\n"
-        "🔵 ISO별 Local GR 방안 (진행중)\n\n"
-        "전체 이행률: *14%* (1/7)"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text("🔐 /start"); return
+    await update.message.reply_text(
+        "🎯 *전략 액션*\n━━━━━━━━━━━━━━\n✅ EPC Framework\n"
+        "🔵 매각 프로세스 / Value-up / Legacy / BESS / ISO GR\n\n이행률: *14%*", parse_mode="Markdown")
 
 async def ppa_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_authed(update.effective_user.id):
-        await update.message.reply_text("🔐 먼저 비밀번호를 입력해주세요. /start")
-        return
-    msg = (
-        "⚡ *PPA 진척 현황*\n"
-        "━━━━━━━━━━━━━━\n"
-        "총 18개 프로젝트\n\n"
-        "🟡 BL: Atlas 15 (논의 진행)\n"
-        "🔵 RFP: Harlem River, Taormina, Lavender, Gibson\n"
-        "⬜ 미착수: 나머지 13개\n\n"
-        "계약 완료: 0건"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text("🔐 /start"); return
+    await update.message.reply_text(
+        "⚡ *PPA 현황*\n━━━━━━━━━━━━━━\n총 18개\n\n"
+        "🟡 BL: Atlas 15\n🔵 RFP: Harlem River Taormina Lavender Gibson\n⬜ 미착수: 13개", parse_mode="Markdown")
 
 async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid  = update.effective_user.id
-    text = update.message.text.strip()
-
-    # 비밀번호 입력 처리
+    uid, text = update.effective_user.id, update.message.text.strip()
     if not is_authed(uid):
         if text == BOT_PW:
             AUTHED.add(uid)
             await update.message.reply_text("✅ 인증되었습니다!")
             await show_menu(update)
         else:
-            await update.message.reply_text(
-                "❌ 비밀번호가 틀렸습니다.\n다시 입력하거나 /start 를 눌러주세요."
-            )
+            await update.message.reply_text("❌ 비밀번호 오류. /start")
         return
-
-    # 인증된 사용자 — Claude 질문
     await update.message.reply_text("🤔 분석 중...")
-    answer = ask_claude(text)
-    await update.message.reply_text(answer)
+    await update.message.reply_text(ask_claude(text))
 
-# ── 실행 ──────────────────────────────────────────
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start",     start))
@@ -230,6 +191,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("liquidity", liquidity_cmd))
     app.add_handler(CommandHandler("strategy",  strategy_cmd))
     app.add_handler(CommandHandler("ppa",       ppa_cmd))
+    app.add_handler(CommandHandler("ppv",       ppv_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🤖 HWR Bot 시작!")
+    print("🤖 HWR Bot 시작! (Firebase 연동)")
     app.run_polling()
